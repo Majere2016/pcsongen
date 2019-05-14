@@ -1,0 +1,121 @@
+---
+title: "PCA的基因检验-R语言实现"
+author: "马喆诚"
+date: "5/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## 介绍
+
+癌症基因组图谱（TCGA）数据集包含33种癌症的关键基因组变化，由国家癌症研究所（NCI）和国家人类基因组研究所（NHGRI）生成。 在该报告中分析来自TCGA数据集的472个黑素瘤受试者的RNA-Seq数据，以进行PCA结构，差异表达分析和途径分析。
+## Data
+```{r}
+load(url("http://www.maths.usyd.edu.au/u/ellisp/AMED3002/melanoma.RData"))
+```
+
+### PCA plot
+
+```{r}
+counts2 = counts[rowMeans(counts) > 20, ]
+pca = prcomp(t(counts2), scale = TRUE)
+summary(pca)$importance[,1:6]
+pal = colorRampPalette(c("blue", "red"))(ncol(counts2))
+pairs(pca$x[, 1:3], col = pal[rank(colSums(counts2))],main="Scatter plot of first 6 PCA")
+```
+根据散点图，PC1具有明显的颜色区别，表示结果的数量，但PC2和PC3没有。
+
+EE-A29W和D3-A51H RNA的表达没有差异，这意味着没有显着影响。
+
+```{r}
+design <- model.matrix(~gender, clinical)
+library(edgeR)
+library(limma)
+dge <- DGEList(counts = counts[, rownames(design)])
+dge <- calcNormFactors(dge)
+v <- voom(dge, design, plot = TRUE,main="MA plot comparing melanoma genomics")
+```
+
+```{r}
+fit <- lmFit(v, design)
+fit <- eBayes(fit, robust = TRUE)
+topGenes = topTable(fit, coef = "gendermale", n = 1e+06, p.value = 0.05)
+dim(topGenes)
+```
+
+```{r}
+hist(fit$p.value[, 2],main="Histogram of melanoma genomics")
+volcanoplot(fit, coef = "gendermale", main="Volcanoplot of melanoma genomics")
+```
+```{r}
+library(Mus.musculus)
+library(org.Hs.eg.db)
+map = select(org.Hs.eg.db, keys = rownames(counts2), columns = "SYMBOL", keytype = "ENSEMBL")
+map = map[!duplicated(map$ENSEMBL), ]
+rownames(map) = map$ENSEMBL
+head(map[rownames(topGenes), ])
+```
+
+
+差异表达分析比较两性之间的基因表达。 MA图，直方图和Volcano图显示大多数p值小于0.05。这表明男性和女性中存在不同的基因，前6个显着基因是：ENSG00000229807，ENSG00000099725，ENSG00000129824，ENSG00000012817，ENSG00000067646，ENSG00000067048
+### Pathway Analysis
+
+```{r}
+library(Homo.sapiens)
+map1 = select(org.Hs.eg.db, keys = rownames(counts), columns = "SYMBOL", keytype = "ENSEMBL")
+map1 = map1[!duplicated(map1$ENSEMBL), ]
+rownames(map1) = map1$ENSEMBL
+head(map1[rownames(topGenes), ])
+head(map1)
+library(biomaRt)
+```
+
+
+
+```{r}
+# select mart and data set
+bm <- useMart("ensembl")
+bm <- useDataset("hsapiens_gene_ensembl", mart = bm)
+# Get ensembl gene ids and GO terms
+EG2GO <- getBM(mart = bm, attributes = c("ensembl_gene_id", "go_id", "name_1006"))
+# examine result
+head(EG2GO, 15)
+```
+
+
+```{r}
+# Remove blank entries
+EG2GO <- EG2GO[EG2GO$go_id != "", ]
+# convert from table format to list format
+GOID2gene <- split(EG2GO$ensembl_gene_id, EG2GO$name_1006)
+GOID2gene <- lapply(GOID2gene, intersect, rownames(counts))
+# Only look at pathways with 10 or more genes
+GOID2gene <- GOID2gene[unlist(lapply(GOID2gene, length)) > 10]
+```
+
+
+```{r}
+# Let GOID2gene be a list of GO-gene-sets to gene symbols
+pval = fit$p.value[,2]
+pval = pval[names(pval)%in%unlist(GOID2gene)]  #Restrict to looking in a smaller universe
+DE = p.adjust(pval,'fdr')<0.05
+
+## Fisher test
+GOpval = lapply(GOID2gene,function(x){
+  pathway = names(DE)%in%x
+  tab = table(DE,pathway)
+  fisher.test(tab)$p.value
+})
+head(sort(unlist(GOpval)))
+```
+
+
+Fisher'检验显示所有p值均小于0.05，这表明基因表达途径：翻译起始的正调节，核小体组装，RNA结合，翻译起始，翻译激活因子活性，细胞溶质小核糖体亚基是最相关的。
+## Conclusion
+
+
+雄性和雌性在黑素瘤中存在不同的基因，并且前6个显着基因是：ENSG00000229807，ENSG00000099725，ENSG00000129824，ENSG00000012817，ENSG00000067646，ENSG00000067048。
+
+翻译起始，核小体组装，RNA结合，翻译起始，翻译激活因子活性，细胞溶质小核糖体亚基的正调节的基因表达途径是最相关的。
